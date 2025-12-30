@@ -22,11 +22,17 @@ make_relativity_plot <- function(df_data, df_coef, coef) {
   max_exposure_prop <- max(df_plot$Exposure_Prop)
 
   ggplot(df_plot, aes(x = .data[[coef]])) +
-    geom_col(aes(.data[[coef]], Exposure_Prop), fill = "grey70", alpha = 0.6) +
+    geom_col(
+      aes(.data[[coef]], Exposure_Prop),
+      fill = "grey70",
+      alpha = 0.6,
+      width = 0.6
+    ) +
     geom_col(
       aes(.data[[coef]], Exposure_Prop),
       data = filter(df_plot, relativity == 1),
-      fill = "grey50"
+      fill = "grey50",
+      width = 0.6
     ) +
     geom_line(
       aes(

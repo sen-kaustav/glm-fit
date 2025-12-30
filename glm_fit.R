@@ -27,6 +27,14 @@ mod <- glm(formula, data = data, family = poisson("log"))
 df_coefs <- mod |>
   tidy()
 
+data |>
+  mutate(
+    across(all_of("Seniority_bin"), \(x) {
+      fct_collapse(x, "1-5" = c("1", "2", "3", "4", "5"))
+    })
+  ) |>
+  count(Seniority_bin)
+
 make_relativity_plot(data, df_coefs, "Area")
 
 data |>
