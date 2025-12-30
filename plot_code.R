@@ -1,6 +1,7 @@
 library(dplyr)
 library(ggplot2)
 library(showtext)
+library(curl)
 
 font_add_google("Inter", "Inter")
 showtext_auto()
