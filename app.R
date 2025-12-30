@@ -5,8 +5,8 @@ library(forcats)
 
 source("plot_code.R")
 
-data <- arrow::read_parquet(fs::path("data", "motor_data.parquet"))
-pred_vars <- data |> select(where(is.factor)) |> names()
+# data <- arrow::read_parquet(fs::path("data", "motor_data.parquet"))
+# pred_vars <- data |> select(where(is.factor)) |> names()
 
 ui <- page_fillable(
   theme = bs_theme(preset = "zephyr"),
@@ -20,10 +20,16 @@ ui <- page_fillable(
         # Checkbox list of predictor variables
         div(
           class = "d-flex flex-wrap gap-3",
+          fileInput(
+            "input_file",
+            label = "Upload file for analysis",
+            placeholder = "parquet files only",
+            accept = ".parquet"
+          ),
           checkboxGroupInput(
             "pred_vars_select",
             label = "Select predictor variables:",
-            choices = pred_vars
+            choices = NULL
           )
         ),
         actionButton(
@@ -38,7 +44,7 @@ ui <- page_fillable(
           selectInput(
             "var_analysis",
             "Select variable to analyse:",
-            choices = NULL
+            choices = c("Select variable" = "")
           ),
           accordion(
             open = FALSE,
@@ -82,7 +88,37 @@ server <- function(input, output, session) {
   mod <- reactiveVal(NULL)
   formula <- reactiveVal(NULL)
   df_coefs <- reactiveVal(NULL)
-  df_glm_data <- reactiveVal(data)
+  df_glm_data <- reactiveVal(NULL)
+  df_orig <- reactiveVal(NULL)
+
+  # Set file uploads to a maximum of 30 MB
+  options(shiny.maxRequestSize = 30 * 1024^2)
+
+  observeEvent(input$input_file, {
+    req(input$input_file)
+    df_upload <- arrow::read_parquet(input$input_file$datapath)
+    df_orig(df_upload)
+    df_glm_data(df_upload)
+
+    # Reset analysis in case already present
+    show_plot(FALSE)
+    updateSelectInput(
+      inputId = "var_analysis",
+      choices = character(0),
+      selected = ""
+    )
+  })
+
+  pred_choices <- reactive(
+    df_glm_data() |> select(where(is.factor)) |> names()
+  )
+  observeEvent(
+    input$input_file,
+    updateCheckboxGroupInput(
+      inputId = "pred_vars_select",
+      choices = pred_choices()
+    )
+  )
 
   observeEvent(input$fit_glm, {
     notify_start <- showNotification(
@@ -112,20 +148,18 @@ server <- function(input, output, session) {
 
     updateSelectInput(
       inputId = "var_analysis",
-      choices = c("Select variable" = "", vars),
-      selected = ""
+      choices = c("Select variable" = "", vars)
     )
 
     showNotification("Results refreshed!", type = "message", duration = 3)
   })
 
   observeEvent(input$var_analysis, {
-    if (input$var_analysis != "") {
-      show_plot(TRUE)
-      choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
-      updateSelectInput(inputId = "var_grouping", choices = choices)
-      updateTextInput(inputId = "var_grouping_name", value = "")
-    }
+    req(input$var_analysis, input$var_analysis != "")
+    show_plot(TRUE)
+    choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
+    updateSelectInput(inputId = "var_grouping", choices = choices)
+    updateTextInput(inputId = "var_grouping_name", value = "")
   })
 
   observeEvent(input$var_grouping, {
@@ -195,7 +229,7 @@ server <- function(input, output, session) {
     on.exit(removeNotification(notify_start), add = TRUE)
 
     # Re-set data gropuing
-    df_glm_data(data)
+    df_glm_data(df_orig())
 
     # Re-fit GLM model with original groupings
     mod(glm(formula(), data = df_glm_data(), family = poisson("log")))
