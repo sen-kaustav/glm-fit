@@ -1,0 +1,29 @@
+.cont_var_options {
+  margin-left: 30px;
+  font-size: 0.8rem;
+}
+
+#pred_cont_vars .form-group {
+  margin-top: 2px;
+  margin-bottom: 0px;
+}
+
+.cont_var_options .form-group > div {
+  margin-bottom: 5px;
+}
+
+.cont_var_options .form-group select.form-control {
+  padding: 5px;
+  font-size: 0.7rem;
+}
+
+.cont_var_options .form-group {
+  display: table-row;
+}
+
+.cont_var_options label.control-label {
+  display: table-cell;
+  text-align: left;
+  vertical-align: middle;
+  padding-right: 10px;
+}
