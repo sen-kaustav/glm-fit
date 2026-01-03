@@ -1,36 +1,49 @@
 library(shiny)
 library(bslib)
+library(shinyjs)
 library(dplyr)
+library(parsnip)
+library(poissonreg)
 library(forcats)
 
 source("plot_code.R")
 
-# data <- arrow::read_parquet(fs::path("data", "motor_data.parquet"))
-# pred_vars <- data |> select(where(is.factor)) |> names()
-
 ui <- page_fillable(
-  theme = bs_theme(preset = "zephyr"),
+  theme = bs_theme(preset = "zephyr") |>
+    bs_add_rules(sass::sass_file("www/styles.scss")),
   title = "GLM Fitting",
+  useShinyjs(),
   card(
     card_header(h3("GLM Fitting and Diagnostics")),
     layout_sidebar(
       sidebar = sidebar(
         width = "400px",
-        open = "always",
+        open = "open",
         # Checkbox list of predictor variables
         div(
-          class = "d-flex flex-wrap gap-3",
+          class = "d-flex flex-wrap",
           fileInput(
             "input_file",
             label = "Upload file for analysis",
             placeholder = "parquet files only",
             accept = ".parquet"
           ),
-          checkboxGroupInput(
-            "pred_vars_select",
-            label = "Select predictor variables:",
-            choices = NULL
-          )
+          hidden(
+            div(
+              id = "pred_vars_input",
+              h5("Select predictor variables"),
+              checkboxGroupInput(
+                "pred_vars_select",
+                label = "Categorical variables:",
+                choices = NULL
+              ),
+              div(
+                id = "pred_cont_vars_container",
+                strong("Continuous variables:"),
+                uiOutput("pred_cont_vars")
+              ),
+            )
+          ),
         ),
         actionButton(
           "fit_glm",
@@ -112,13 +125,71 @@ server <- function(input, output, session) {
   pred_choices <- reactive(
     df_glm_data() |> select(where(is.factor)) |> names()
   )
+
+  pred_cont_choices <- reactive({
+    req(df_glm_data())
+    all_cols <- df_glm_data() |> select(where(is.numeric)) |> names()
+    cols_to_remove <- c("ID", "Exposure", "Claim_Count", "Claim_Amount")
+    setdiff(all_cols, cols_to_remove)
+  })
+
   observeEvent(
     input$input_file,
-    updateCheckboxGroupInput(
-      inputId = "pred_vars_select",
-      choices = pred_choices()
-    )
+    {
+      updateCheckboxGroupInput(
+        inputId = "pred_vars_select",
+        choices = pred_choices()
+      )
+
+      # Show options to select variables
+      show(id = "pred_vars_input", anim = TRUE)
+    }
   )
+
+  output$pred_cont_vars <- renderUI({
+    purrr::map(pred_cont_choices(), \(item) {
+      tagList(
+        checkboxInput(paste0("cont_var_", item), label = item),
+        hidden(div(
+          class = "cont_var_options",
+          id = paste0("cont_var_options_", item),
+          selectInput(
+            paste0("cont_var_transform_", item),
+            label = "Transform",
+            choices = c("None", "Centre", "Normalise"),
+            selectize = FALSE
+          ),
+          selectInput(
+            paste0("cont_var_scale_", item),
+            label = "Scale",
+            choices = c("None", "Log", "Sqrt"),
+            selected = "None",
+            selectize = FALSE
+          ),
+          selectInput(
+            paste0("cont_var_poly_", item),
+            label = "Polynomial degree",
+            choices = seq_len(3),
+            selected = 1,
+            selectize = FALSE
+          )
+        )),
+      )
+    })
+  })
+
+  observe({
+    req(pred_cont_choices())
+    lapply(pred_cont_choices(), \(var) {
+      observeEvent(input[[paste0("cont_var_", var)]], {
+        toggle(
+          paste0("cont_var_options_", var),
+          anim = TRUE,
+          condition = input[[paste0("cont_var_", var)]]
+        )
+      })
+    })
+  })
 
   observeEvent(input$fit_glm, {
     notify_start <- showNotification(
@@ -138,7 +209,11 @@ server <- function(input, output, session) {
       )
     ))
 
-    mod(glm(formula(), data = df_glm_data(), family = poisson("log")))
+    mod(
+      poisson_reg() |>
+        set_engine("glm", family = poisson(link = "log")) |>
+        fit(formula(), data = df_glm_data())
+    )
 
     # Update the reactive value with new coefficients
     df_coefs(broom::tidy(mod(), exponentiate = TRUE))
@@ -189,7 +264,11 @@ server <- function(input, output, session) {
     })
 
     # Re-fit GLM model with updated groupings
-    mod(glm(formula(), data = df_glm_data(), family = poisson("log")))
+    mod(
+      poisson_reg() |>
+        set_engine("glm", family = poisson(link = "log")) |>
+        fit(formula(), data = df_glm_data())
+    )
 
     # Update the reactive value with new coefficients
     df_coefs(broom::tidy(mod(), exponentiate = TRUE))
