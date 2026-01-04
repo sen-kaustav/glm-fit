@@ -5,8 +5,11 @@ library(arrow)
 
 data <- read_parquet(r"(C:\glm-clean\clean_data\motor_data.parquet)")
 
-
-rec_poly <- recipe(data, Claim_Count ~ Value_vehicle) |>
+rec_poly <- recipe(
+  data,
+  Claim_Count ~ Value_vehicle + Type_risk + Second_driver + Exposure
+) |>
+  # update_role(Exposure, new_role = "offset") |>
   step_log(Value_vehicle) |>
   step_normalize(Value_vehicle) |>
   step_poly(
@@ -37,7 +40,7 @@ mod_spec <- poisson_reg() |>
   set_engine("glm", family = poisson("log"))
 
 wflow <- workflow() |>
-  add_recipe(rec_spec) |>
+  add_recipe(rec_poly) |>
   add_model(
     mod_spec,
     formula = Claim_Count ~ . -

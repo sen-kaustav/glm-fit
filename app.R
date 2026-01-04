@@ -2,8 +2,11 @@ library(shiny)
 library(bslib)
 library(shinyjs)
 library(dplyr)
+library(tidyr)
+library(recipes)
 library(parsnip)
 library(poissonreg)
+library(workflows)
 library(forcats)
 
 source("plot_code.R")
@@ -11,7 +14,7 @@ source("plot_code.R")
 ui <- page_fillable(
   theme = bs_theme(preset = "zephyr") |>
     bs_add_rules(sass::sass_file("www/styles.scss")),
-  title = "GLM Fitting",
+  title = "GLM Fitting and Diagnostics",
   useShinyjs(),
   card(
     card_header(h3("GLM Fitting and Diagnostics")),
@@ -98,8 +101,14 @@ ui <- page_fillable(
 
 server <- function(input, output, session) {
   show_plot <- reactiveVal(FALSE)
+
   mod <- reactiveVal(NULL)
   formula <- reactiveVal(NULL)
+
+  spec_recipe <- reactiveVal(NULL)
+  spec_model <- reactiveVal(NULL)
+  wflow <- reactiveVal(NULL)
+
   df_coefs <- reactiveVal(NULL)
   df_glm_data <- reactiveVal(NULL)
   df_orig <- reactiveVal(NULL)
@@ -149,21 +158,21 @@ server <- function(input, output, session) {
   output$pred_cont_vars <- renderUI({
     purrr::map(pred_cont_choices(), \(item) {
       tagList(
-        checkboxInput(paste0("cont_var_", item), label = item),
+        checkboxInput(paste0("cont_var_name_", item), label = item),
         hidden(div(
           class = "cont_var_options",
           id = paste0("cont_var_options_", item),
-          selectInput(
-            paste0("cont_var_transform_", item),
-            label = "Transform",
-            choices = c("None", "Centre", "Normalise"),
-            selectize = FALSE
-          ),
           selectInput(
             paste0("cont_var_scale_", item),
             label = "Scale",
             choices = c("None", "Log", "Sqrt"),
             selected = "None",
+            selectize = FALSE
+          ),
+          selectInput(
+            paste0("cont_var_transform_", item),
+            label = "Transform",
+            choices = c("None", "Centre", "Normalise"),
             selectize = FALSE
           ),
           selectInput(
@@ -181,11 +190,11 @@ server <- function(input, output, session) {
   observe({
     req(pred_cont_choices())
     lapply(pred_cont_choices(), \(var) {
-      observeEvent(input[[paste0("cont_var_", var)]], {
+      observeEvent(input[[paste0("cont_var_name_", var)]], {
         toggle(
           paste0("cont_var_options_", var),
           anim = TRUE,
-          condition = input[[paste0("cont_var_", var)]]
+          condition = input[[paste0("cont_var_name_", var)]]
         )
       })
     })
@@ -201,29 +210,121 @@ server <- function(input, output, session) {
 
     vars <- input$pred_vars_select
 
+    vars_cont_labels <- names(input)[grep(
+      "cont_var",
+      names(input),
+      fixed = TRUE
+    )]
+    vars_cont_values <- sapply(vars_cont_labels, \(var) input[[var]])
+    vars_cont_df <- tibble(vars_cont_labels, vars_cont_values) |>
+      separate_wider_regex(
+        vars_cont_labels,
+        patterns = c("cont_var", "_", name = "[a-z]+", "_", var = ".*")
+      ) |>
+      pivot_wider(names_from = "name", values_from = vars_cont_values) |>
+      mutate(poly = as.numeric(poly), name = as.logical(name)) |>
+      filter(name)
+
+    vars_all <- c(vars, vars_cont_df$var)
+
     formula(as.formula(
       paste(
         "Claim_Count ~ ",
-        paste(vars, collapse = "+"),
-        "+ offset(log(Exposure))"
+        paste(vars_all, collapse = "+"),
+        " + Exposure"
       )
     ))
 
-    mod(
+    spec_recipe(recipe(formula = formula(), data = df_glm_data()))
+
+    vars_to_log <- filter(vars_cont_df, scale == "Log") |> pull(var)
+    if (length(vars_to_log) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_log(all_of(vars_to_log))
+      )
+    }
+
+    vars_to_sqrt <- filter(vars_cont_df, scale == "Sqrt") |> pull(var)
+    if (length(vars_to_sqrt) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_sqrt(all_of(vars_to_sqrt))
+      )
+    }
+
+    vars_to_centre <- filter(vars_cont_df, transform == "Centre") |> pull(var)
+    if (length(vars_to_centre) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_center(all_of(vars_to_centre))
+      )
+    }
+
+    vars_to_normalise <- filter(vars_cont_df, transform == "Normalise") |>
+      pull(var)
+    if (length(vars_to_normalise) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_normalize(all_of(vars_to_normalise))
+      )
+    }
+
+    vars_to_poly_1 <- filter(vars_cont_df, poly == 1) |> pull(var)
+    if (length(vars_to_poly_1) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_poly(all_of(vars_to_poly_1), degree = 1)
+      )
+    }
+
+    vars_to_poly_2 <- filter(vars_cont_df, poly == 2) |> pull(var)
+    if (length(vars_to_poly_2) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_poly(all_of(vars_to_poly_2), degree = 2)
+      )
+    }
+
+    vars_to_poly_3 <- filter(vars_cont_df, poly == 3) |> pull(var)
+    if (length(vars_to_poly_3) != 0) {
+      spec_recipe(
+        spec_recipe() |>
+          step_poly(all_of(vars_to_poly_3), degree = 3)
+      )
+    }
+
+    spec_model(
       poisson_reg() |>
-        set_engine("glm", family = poisson(link = "log")) |>
-        fit(formula(), data = df_glm_data())
+        set_engine("glm", family = poisson("log"))
+    )
+
+    browser()
+
+    wflow(
+      workflow() |>
+        add_recipe(spec_recipe()) |>
+        add_model(
+          spec_model(),
+          formula = Claim_Count ~ . - Exposure + offset(log(Exposure))
+        ) |>
+        fit(data = df_glm_data())
     )
 
     # Update the reactive value with new coefficients
-    df_coefs(broom::tidy(mod(), exponentiate = TRUE))
+    df_coefs(broom::tidy(wflow(), exponentiate = TRUE))
 
     # Clear out the plot
     show_plot(FALSE)
 
     updateSelectInput(
       inputId = "var_analysis",
-      choices = c("Select variable" = "", vars)
+      # choices = c("Select variable" = "", vars)
+      choices = list(
+        "Select variable" = "",
+        "Categorical variables" = as.list(vars),
+        "Continuous variables" = as.list(vars_cont_df$var)
+      )
     )
 
     showNotification("Results refreshed!", type = "message", duration = 3)
@@ -280,8 +381,6 @@ server <- function(input, output, session) {
 
     showNotification("Results refreshed!", type = "message", duration = 3)
   })
-
-  model_reset_confirm <- modalDialog()
 
   observeEvent(input$grouping_reset, {
     showModal(modalDialog(
