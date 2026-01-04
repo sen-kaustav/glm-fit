@@ -30,7 +30,7 @@
 #'
 #' ignore_step(rec, id = "PCA")
 #'
-#' ignore_step(rec, step_type = "step_mutate")
+#' ignore_step(rec, step_type = "step_normalize")
 #' @export
 
 library(purrr)
