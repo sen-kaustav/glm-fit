@@ -10,7 +10,7 @@ library(workflows)
 library(forcats)
 
 source("plot_code.R")
-source("ignore_step.R")
+source("create_recipe.R")
 
 ui <- page_fillable(
   theme = bs_theme(preset = "zephyr") |>
@@ -107,13 +107,15 @@ server <- function(input, output, session) {
   show_plot <- reactiveVal(FALSE)
 
   formula <- reactiveVal(NULL)
+  vars_cont_df <- reactiveVal(NULL)
   spec_recipe <- reactiveVal(NULL)
   spec_model <- reactiveVal(NULL)
   wflow <- reactiveVal(NULL)
 
   df_coefs <- reactiveVal(NULL)
-  df_glm_data <- reactiveVal(NULL)
   df_orig <- reactiveVal(NULL)
+  df_glm_data <- reactiveVal(NULL)
+  df_glm_data_addnl_group <- reactiveVal(NULL)
 
   # Set file uploads to a maximum of 30 MB
   options(shiny.maxRequestSize = 30 * 1024^2)
@@ -122,6 +124,7 @@ server <- function(input, output, session) {
     req(input$input_file)
     df_upload <- arrow::read_parquet(input$input_file$datapath)
     df_orig(df_upload)
+    df_glm_data_addnl_group(df_upload)
     df_glm_data(df_upload)
 
     # Reset analysis in case already present
@@ -134,12 +137,12 @@ server <- function(input, output, session) {
   })
 
   pred_choices <- reactive(
-    df_glm_data() |> select(where(is.factor)) |> names()
+    df_orig() |> select(where(is.factor)) |> names()
   )
 
   pred_cont_choices <- reactive({
-    req(df_glm_data())
-    all_cols <- df_glm_data() |> select(where(is.numeric)) |> names()
+    req(df_orig())
+    all_cols <- df_orig() |> select(where(is.numeric)) |> names()
     cols_to_remove <- c("ID", "Exposure", "Claim_Count", "Claim_Amount")
     setdiff(all_cols, cols_to_remove)
   })
@@ -218,16 +221,18 @@ server <- function(input, output, session) {
       fixed = TRUE
     )]
     vars_cont_values <- sapply(vars_cont_labels, \(var) input[[var]])
-    vars_cont_df <- tibble(vars_cont_labels, vars_cont_values) |>
-      separate_wider_regex(
-        vars_cont_labels,
-        patterns = c("cont_var", "_", name = "[a-z]+", "_", var = ".*")
-      ) |>
-      pivot_wider(names_from = "name", values_from = vars_cont_values) |>
-      mutate(poly = as.numeric(poly), name = as.logical(name)) |>
-      filter(name)
+    vars_cont_df(
+      tibble(vars_cont_labels, vars_cont_values) |>
+        separate_wider_regex(
+          vars_cont_labels,
+          patterns = c("cont_var", "_", name = "[a-z]+", "_", var = ".*")
+        ) |>
+        pivot_wider(names_from = "name", values_from = vars_cont_values) |>
+        mutate(poly = as.numeric(poly), name = as.logical(name)) |>
+        filter(name)
+    )
 
-    vars_all <- c(vars, vars_cont_df$var)
+    vars_all <- c(vars, vars_cont_df()$var)
 
     formula(as.formula(
       paste(
@@ -237,63 +242,21 @@ server <- function(input, output, session) {
       )
     ))
 
-    spec_recipe(recipe(formula = formula(), data = df_glm_data()))
-
-    vars_to_log <- filter(vars_cont_df, scale == "Log") |> pull(var)
-    if (length(vars_to_log) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_log(all_of(vars_to_log))
-      )
-    }
-
-    vars_to_sqrt <- filter(vars_cont_df, scale == "Sqrt") |> pull(var)
-    if (length(vars_to_sqrt) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_sqrt(all_of(vars_to_sqrt))
-      )
-    }
-
-    vars_to_centre <- filter(vars_cont_df, transform == "Centre") |> pull(var)
-    if (length(vars_to_centre) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_center(all_of(vars_to_centre))
-      )
-    }
-
-    vars_to_normalise <- filter(vars_cont_df, transform == "Normalise") |>
-      pull(var)
-    if (length(vars_to_normalise) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_normalize(all_of(vars_to_normalise))
-      )
-    }
-
-    vars_to_poly_1 <- filter(vars_cont_df, poly == 1) |> pull(var)
-    if (length(vars_to_poly_1) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_poly(all_of(vars_to_poly_1), degree = 1)
-      )
-    }
-
-    vars_to_poly_2 <- filter(vars_cont_df, poly == 2) |> pull(var)
-    if (length(vars_to_poly_2) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_poly(all_of(vars_to_poly_2), degree = 2)
-      )
-    }
-
-    vars_to_poly_3 <- filter(vars_cont_df, poly == 3) |> pull(var)
-    if (length(vars_to_poly_3) != 0) {
-      spec_recipe(
-        spec_recipe() |>
-          step_poly(all_of(vars_to_poly_3), degree = 3)
-      )
+    if (is.null(spec_recipe())) {
+      spec_recipe(create_recipe(
+        vars_cat = vars,
+        vars_cont_df = vars_cont_df(),
+        formula = formula(),
+        train_df = df_glm_data()
+      ))
+    } else {
+      spec_recipe(create_recipe(
+        vars_cat = vars,
+        vars_cont_df = vars_cont_df(),
+        formula = formula(),
+        train_df = df_glm_data_addnl_group()
+      ))
+      df_glm_data(df_glm_data_addnl_group())
     }
 
     spec_model(
@@ -323,7 +286,7 @@ server <- function(input, output, session) {
       choices = list(
         "Select variable" = "",
         "Categorical variables" = as.list(vars),
-        "Continuous variables" = as.list(vars_cont_df$var)
+        "Continuous variables" = as.list(vars_cont_df()$var)
       )
     )
 
@@ -363,6 +326,20 @@ server <- function(input, output, session) {
     spec_recipe(
       spec_recipe() |>
         step_mutate(
+          across(all_of(input$var_analysis), \(x) {
+            fct_collapse(
+              x,
+              !!!setNames(list(input$var_grouping), input$var_grouping_name)
+            )
+          })
+        )
+    )
+
+    # Apply the updated groupings to the GLM data with additional grouping.
+    # This ensures the groupings are retained when a new model is re-fit (without reverting back to the original levels)
+    df_glm_data_addnl_group(
+      df_glm_data_addnl_group() |>
+        mutate(
           across(all_of(input$var_analysis), \(x) {
             fct_collapse(
               x,
@@ -414,12 +391,26 @@ server <- function(input, output, session) {
     )
     on.exit(removeNotification(notify_start), add = TRUE)
 
-    browser()
-    # Re-set data grouping
-    df_glm_data(df_orig())
+    # Re-set data grouping by re-creating original recipe
+    spec_recipe(
+      create_recipe(
+        vars_cat = input$pred_vars_select,
+        vars_cont_df = vars_cont_df(),
+        formula = formula(),
+        train_df = df_orig()
+      )
+    )
 
     # Re-fit GLM model with original groupings
-    wflow(wflow() |> fit(data = df_glm_data()))
+    wflow(
+      wflow() |>
+        update_recipe(spec_recipe()) |>
+        fit(data = df_orig())
+    )
+
+    # Re-set dataframes to be the original input
+    df_glm_data(df_orig())
+    df_glm_data_addnl_group(df_orig())
 
     # Update model coefficients
     df_coefs(broom::tidy(wflow(), exponentiate = TRUE))
