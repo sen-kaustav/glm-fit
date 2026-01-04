@@ -10,6 +10,7 @@ library(workflows)
 library(forcats)
 
 source("plot_code.R")
+source("ignore_step.R")
 
 ui <- page_fillable(
   theme = bs_theme(preset = "zephyr") |>
@@ -62,28 +63,31 @@ ui <- page_fillable(
             "Select variable to analyse:",
             choices = c("Select variable" = "")
           ),
-          accordion(
-            open = FALSE,
-            accordion_panel(
-              title = "Apply further grouping",
-              selectInput(
-                "var_grouping",
-                "Select categories to group:",
-                choices = NULL,
-                multiple = TRUE
-              ),
-              textInput("var_grouping_name", "New group name:"),
-              div(
-                class = "d-flex gap-2",
-                actionButton(
-                  "refit_glm",
-                  span("Re-fit", icon("shuffle")),
-                  class = "btn-primary flex-grow-1"
+          hidden(
+            accordion(
+              open = FALSE,
+              id = "var_grouping_ui",
+              accordion_panel(
+                title = "Apply further grouping",
+                selectInput(
+                  "var_grouping",
+                  "Select categories to group:",
+                  choices = NULL,
+                  multiple = TRUE
                 ),
-                actionButton(
-                  "grouping_reset",
-                  span("Reset", icon("undo")),
-                  class = "btn-danger flex-grow-1"
+                textInput("var_grouping_name", "New group name:"),
+                div(
+                  class = "d-flex gap-2",
+                  actionButton(
+                    "refit_glm",
+                    span("Re-fit", icon("shuffle")),
+                    class = "btn-primary flex-grow-1"
+                  ),
+                  actionButton(
+                    "grouping_reset",
+                    span("Reset", icon("undo")),
+                    class = "btn-danger flex-grow-1"
+                  )
                 )
               )
             )
@@ -102,9 +106,7 @@ ui <- page_fillable(
 server <- function(input, output, session) {
   show_plot <- reactiveVal(FALSE)
 
-  mod <- reactiveVal(NULL)
   formula <- reactiveVal(NULL)
-
   spec_recipe <- reactiveVal(NULL)
   spec_model <- reactiveVal(NULL)
   wflow <- reactiveVal(NULL)
@@ -299,8 +301,6 @@ server <- function(input, output, session) {
         set_engine("glm", family = poisson("log"))
     )
 
-    browser()
-
     wflow(
       workflow() |>
         add_recipe(spec_recipe()) |>
@@ -333,9 +333,14 @@ server <- function(input, output, session) {
   observeEvent(input$var_analysis, {
     req(input$var_analysis, input$var_analysis != "")
     show_plot(TRUE)
-    choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
-    updateSelectInput(inputId = "var_grouping", choices = choices)
-    updateTextInput(inputId = "var_grouping_name", value = "")
+    if (input$var_analysis %in% input$pred_vars_select) {
+      choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
+      updateSelectInput(inputId = "var_grouping", choices = choices)
+      updateTextInput(inputId = "var_grouping_name", value = "")
+      show(id = "var_grouping_ui")
+    } else {
+      hide(id = "var_grouping_ui")
+    }
   })
 
   observeEvent(input$var_grouping, {
@@ -354,25 +359,28 @@ server <- function(input, output, session) {
       type = "warning"
     )
     on.exit(removeNotification(notify_start), add = TRUE)
-    df_glm_data({
-      df_glm_data() |>
-        mutate(across(all_of(input$var_analysis), \(x) {
-          fct_collapse(
-            x,
-            !!!setNames(list(input$var_grouping), input$var_grouping_name)
-          )
-        }))
-    })
+
+    spec_recipe(
+      spec_recipe() |>
+        step_mutate(
+          across(all_of(input$var_analysis), \(x) {
+            fct_collapse(
+              x,
+              !!!setNames(list(input$var_grouping), input$var_grouping_name)
+            )
+          })
+        )
+    )
 
     # Re-fit GLM model with updated groupings
-    mod(
-      poisson_reg() |>
-        set_engine("glm", family = poisson(link = "log")) |>
-        fit(formula(), data = df_glm_data())
+    wflow(
+      wflow() |>
+        update_recipe(spec_recipe()) |>
+        fit(data = df_glm_data())
     )
 
     # Update the reactive value with new coefficients
-    df_coefs(broom::tidy(mod(), exponentiate = TRUE))
+    df_coefs(broom::tidy(wflow(), exponentiate = TRUE))
 
     # Set the grouping input boxes
     choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
@@ -406,14 +414,15 @@ server <- function(input, output, session) {
     )
     on.exit(removeNotification(notify_start), add = TRUE)
 
-    # Re-set data gropuing
+    browser()
+    # Re-set data grouping
     df_glm_data(df_orig())
 
     # Re-fit GLM model with original groupings
-    mod(glm(formula(), data = df_glm_data(), family = poisson("log")))
+    wflow(wflow() |> fit(data = df_glm_data()))
 
     # Update model coefficients
-    df_coefs(broom::tidy(mod(), exponentiate = TRUE))
+    df_coefs(broom::tidy(wflow(), exponentiate = TRUE))
 
     # Set the grouping input boxes
     choices <- unique(df_glm_data()[[input$var_analysis]]) |> sort()
@@ -428,7 +437,10 @@ server <- function(input, output, session) {
     {
       req(show_plot())
       req(input$var_analysis)
-      make_relativity_plot(df_glm_data(), df_coefs(), input$var_analysis)
+      df_plot <- extract_preprocessor(wflow()) |>
+        prep() |>
+        bake(new_data = NULL)
+      make_relativity_plot(df_plot, df_coefs(), input$var_analysis)
     },
     res = 96
   )
